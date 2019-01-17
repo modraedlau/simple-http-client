@@ -30,16 +30,23 @@ public class EventLoop {
 
     private final ExecutorService executor;
 
+    private final ScheduledExecutorService scheduled;
+
     public EventLoop() throws IOException {
         selector = Selector.open();
         clients = new ArrayList<>();
 
+        int availableProcessors = Runtime.getRuntime().availableProcessors();
+        ThreadFactory threadFactory = defaultThreadFactory();
+
         // Read and write task thread pool
-        executor = new ThreadPoolExecutor(Runtime.getRuntime().availableProcessors() * 2,
+        executor = new ThreadPoolExecutor(availableProcessors * 2,
             200,
             100L, TimeUnit.MILLISECONDS,
             new LinkedBlockingQueue<>(10000),
-            defaultThreadFactory());
+            threadFactory);
+
+        scheduled = Executors.newScheduledThreadPool(availableProcessors, threadFactory);
 
         // Selector thread
         selectThread = new Thread(() -> {
@@ -100,6 +107,7 @@ public class EventLoop {
         client.getSocketChannel().register(selector,
             SelectionKey.OP_CONNECT | SelectionKey.OP_READ, client);
         client.setExecutor(executor);
+        client.setScheduled(scheduled);
     }
 
     public void start() {

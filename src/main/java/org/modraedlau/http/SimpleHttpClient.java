@@ -15,10 +15,7 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.util.Queue;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
@@ -32,6 +29,8 @@ public class SimpleHttpClient {
     private static Logger logger = LoggerFactory.getLogger(Producer.class);
 
     private static final int DEFAULT_PORT = 80;
+
+    private static final long DEFAULT_TIMEOUT = 10000;
 
     private final URI uri;
 
@@ -65,6 +64,8 @@ public class SimpleHttpClient {
 
     private volatile ExecutorService executor;
 
+    private volatile ScheduledExecutorService scheduled;
+
     private final HttpResponseDecoder decoder;
 
     /**
@@ -96,6 +97,11 @@ public class SimpleHttpClient {
      */
     public CompletableFuture<HttpResponse> get(String path) {
         CompletableFuture<HttpResponse> promise = new CompletableFuture<>();
+        scheduled.schedule(() -> {
+            TimeoutException timeoutException = new TimeoutException("Request time out: " + DEFAULT_TIMEOUT + "ms");
+            promise.completeExceptionally(timeoutException);
+            closeByException(timeoutException);
+        }, DEFAULT_TIMEOUT, TimeUnit.MILLISECONDS);
         try {
             checkConnection();
         } catch (IOException e) {
@@ -139,6 +145,10 @@ public class SimpleHttpClient {
         this.executor = executor;
     }
 
+    void setScheduled(ScheduledExecutorService scheduled) {
+        this.scheduled = scheduled;
+    }
+
     /**
      * Is connected?
      *
@@ -162,12 +172,8 @@ public class SimpleHttpClient {
         }
     }
 
-    void waitConnected(long timeout, TimeUnit unit) throws InterruptedException {
-        awaitConnection(true, unit.toNanos(timeout));
-    }
-
     void waitConnected() throws InterruptedException {
-        awaitConnection(false, 0L);
+        awaitConnection();
     }
 
     void notifyConnected() {
@@ -183,9 +189,8 @@ public class SimpleHttpClient {
         }
     }
 
-    private int awaitConnection(boolean timed, long nanos)
+    private int awaitConnection()
         throws InterruptedException {
-        final long deadline = timed ? System.nanoTime() + nanos : 0L;
         WaitNode q = null;
         boolean queued = false;
         while (true) {
@@ -206,13 +211,6 @@ public class SimpleHttpClient {
             } else if (!queued) {
                 queued = UNSAFE.compareAndSwapObject(this, waitersOffset,
                     q.next = waiters, q);
-            } else if (timed) {
-                nanos = deadline - System.nanoTime();
-                if (nanos <= 0L) {
-                    removeWaiter(q);
-                    return conn;
-                }
-                LockSupport.parkNanos(this, nanos);
             } else {
                 LockSupport.park(this);
             }
